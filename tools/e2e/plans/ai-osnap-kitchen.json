@@ -1,0 +1,80 @@
+{
+  "title": "Hướng dẫn bật OSNAP và khoanh vùng góc bếp bằng RECTANG",
+  "scenes": [
+    {
+      "label": "Bật chế độ bắt điểm OSNAP",
+      "description": "Bật chế độ OSNAP ở thanh công cụ dưới để bắt chính xác các điểm trên bản vẽ.",
+      "focus": "full",
+      "hold": 1.5,
+      "steps": [
+        {
+          "type": "toggle_mode",
+          "mode": "OSNAP",
+          "on": true
+        },
+        {
+          "type": "pause",
+          "seconds": 1
+        }
+      ]
+    },
+    {
+      "label": "Phóng to khu vực bếp",
+      "description": "Phóng to khu vực Bếp và Phòng ăn để dễ dàng quan sát các điểm góc tường.",
+      "focus": "auto",
+      "hold": 1.5,
+      "steps": [
+        {
+          "type": "zoom_to",
+          "min": [
+            6500,
+            100
+          ],
+          "max": [
+            12200,
+            4100
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Khoanh vùng góc bếp với RECTANG",
+      "description": "Chạy lệnh RECTANG, rê chuột thấy marker Osnap rồi click chọn hai góc đối diện.",
+      "focus": "auto",
+      "hold": 2,
+      "steps": [
+        {
+          "type": "command",
+          "name": "RECTANG",
+          "inputs": [
+            {
+              "point": [
+                7100,
+                200
+              ],
+              "hover": 1.2
+            },
+            {
+              "point": [
+                11800,
+                3800
+              ],
+              "hover": 1.2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Xem lại toàn bộ mặt bằng",
+      "description": "Thu phóng toàn cảnh để kiểm tra khung chữ nhật vừa khoanh khu vực bếp.",
+      "focus": "full",
+      "hold": 2,
+      "steps": [
+        {
+          "type": "zoom_extents"
+        }
+      ]
+    }
+  ]
+}

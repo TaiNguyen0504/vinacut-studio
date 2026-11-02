@@ -1,0 +1,27 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { planWithAi } = require('../../electron/engine/planner.cjs');
+const context = { layers: [{ name: '0' }], extents: { min: [0, 0], max: [100, 100] } };
+const valid = JSON.stringify({ title: 'Demo', scenes: [{ label: 'Xem', caption: 'Xem bản vẽ', hold: 1, focus: 'full', steps: [{ type: 'pause', seconds: 1 }] }] });
+(async () => {
+  let calls = 0;
+  const repaired = await planWithAi({ prompt: 'Demo', context, chat: async () => ++calls === 1 ? '{}' : valid });
+  assert.equal(repaired.attempts, 2);
+  assert.equal(repaired.validationErrors.length, 1);
+  await assert.rejects(() => planWithAi({ prompt: 'Demo', context, chat: async () => '{}' }), (error) => error.attempts === 3 && error.validationErrors.length === 3);
+  await assert.rejects(() => planWithAi({ prompt: 'Demo', context, chat: async () => { throw new Error('Network failure'); } }), (error) => error.attempts === 1 && error.validationErrors.length === 0);
+  const busy = () => Object.assign(new Error('Service busy'), { status: 503 });
+  let busyCalls = 0;
+  const recovered = await planWithAi({ prompt: 'Demo', context, chat: async () => { if (++busyCalls === 1) throw busy(); return valid; } });
+  assert.equal(recovered.attempts, 2);
+  assert.equal(recovered.requestErrors[0].status, 503);
+  let exhaustedCalls = 0;
+  await assert.rejects(() => planWithAi({ prompt: 'Demo', context, chat: async () => { exhaustedCalls++; throw busy(); } }), error => error.attempts === 3 && error.requestErrors.length === 3);
+  assert.equal(exhaustedCalls, 3);
+  const controller = new AbortController();
+  const cancelling = planWithAi({ prompt: 'Demo', context, signal: controller.signal, chat: async () => { throw busy(); } });
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(cancelling, error => error.attempts === 1 && /Đã dừng/.test(error.message));
+  fs.writeFileSync('docs/handoff/evidence/planner-retries.json', JSON.stringify({ passed: true, repairedAttempts: repaired.attempts, validationErrors: repaired.validationErrors, exhaustedAttempts: 3, networkFailureAttempts: 1, busyRecoveredAttempts: recovered.attempts, busyExhaustedCalls: exhaustedCalls, cancelledDuringBackoff: true }, null, 2));
+  console.log('PASS: planner retry metadata');
+})().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { FrameRecorder } = require('../../electron/engine/capture.cjs');
+(async () => {
+  const root = path.resolve('docs/handoff/evidence/checkpoint-unit');
+  await fs.mkdir(root, { recursive: true });
+  const rec = new FrameRecorder({}, root);
+  const frame = path.join(root, 'recorded-frame.bin');
+  rec.frames.push({ file: frame, dur: 1 });
+  rec.pendingWrites.push(fs.writeFile(frame, 'the frame actually recorded'));
+  rec.latest = { toJPEG: () => Buffer.from('a newer, unrecorded empty paint') };
+  const checkpoint = await rec.saveCheckpoint('after-action');
+  assert.equal(await fs.readFile(checkpoint, 'utf8'), 'the frame actually recorded');
+  rec.frames = [];
+  assert.equal(await rec.saveCheckpoint('no-recorded-frame'), null);
+  rec.frames = [{ file: path.join(root, 'missing-frame.bin'), dur: 1 }];
+  await assert.rejects(rec.saveCheckpoint('missing'), error => error.code === 'ENOENT');
+  await fs.writeFile(path.join(root, 'result.json'), JSON.stringify({ passed: true, ignoresUnrecordedPaint: true, emptyReturnsNull: true, missingFrameThrows: true }, null, 2));
+  await fs.rm(frame);
+  await fs.rm(checkpoint);
+  console.log('PASS: checkpoint uses the actual recorded frame');
+})().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -1,0 +1,17 @@
+node_modules
+dist
+release
+.DS_Store
+*.log
+.env
+.env.*
+docs/handoff/local_relay.tmp
+docs/handoff/evidence
+docs/handoff/review-r2
+VinaCAD-Evidence-2026-11-01
+vinacad-current-assets
+reference_frames
+_backup_before_claude_20261031
+
+__pycache__/
+*.pyc

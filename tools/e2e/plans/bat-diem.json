@@ -1,0 +1,50 @@
+{
+  "title": "Bat Diem: đọc context và vẽ LINE",
+  "scenes": [
+    {
+      "label": "Mở bản vẽ",
+      "description": "Mở toàn cảnh bản vẽ Bat Diem thật.",
+      "caption": "Mở toàn cảnh bản vẽ Bat Diem thật.",
+      "focus": "full",
+      "hold": 1.2,
+      "steps": [{ "type": "pause", "seconds": 1 }]
+    },
+    {
+      "label": "Chọn layer 0",
+      "description": "Mở bảng Lớp và chọn layer 0.",
+      "caption": "Chọn layer 0 để chuẩn bị thao tác.",
+      "focus": "auto",
+      "hold": 1.2,
+      "steps": [
+        { "type": "open_panel", "panel": "Layers" },
+        { "type": "select_layer", "layer": "0" }
+      ]
+    },
+    {
+      "label": "Vẽ đường kiểm tra",
+      "description": "Vẽ LINE từ [-2953.8,7824.06] tới [75253.81,7824.06].",
+      "caption": "Vẽ một đường kiểm tra trên hình học thật.",
+      "focus": "auto",
+      "hold": 1.4,
+      "steps": [
+        {
+          "type": "command",
+          "name": "LINE",
+          "inputs": [
+            { "point": [-2953.8, 7824.06], "hover": 0.7 },
+            { "point": [75253.81, 7824.06], "hover": 0.7 },
+            { "key": "Enter" }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Kiểm tra toàn cảnh",
+      "description": "Thu phóng toàn cảnh sau thao tác.",
+      "caption": "Kiểm tra toàn cảnh sau khi vẽ.",
+      "focus": "full",
+      "hold": 1.4,
+      "steps": [{ "type": "zoom_extents" }]
+    }
+  ]
+}

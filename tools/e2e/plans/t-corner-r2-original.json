@@ -1,0 +1,60 @@
+{
+  "title": "T-Corner: Layer và đường hỗ trợ",
+  "scenes": [
+    {
+      "label": "Mở bản vẽ",
+      "description": "Mở bản vẽ T-Corner thật trong VinaCAD Web.",
+      "caption": "Mở bản vẽ T-Corner thật trong VinaCAD Web.",
+      "focus": "full",
+      "hold": 1.2,
+      "steps": [{ "type": "pause", "seconds": 1 }]
+    },
+    {
+      "label": "Mở bảng Layers",
+      "description": "Mở bảng Layers và chọn layer SS_STACK_MAIN.",
+      "caption": "Mở bảng Layers và chọn layer SS_STACK_MAIN.",
+      "focus": "auto",
+      "hold": 1.2,
+      "steps": [
+        { "type": "open_panel", "panel": "Layers" },
+        { "type": "select_layer", "layer": "SS_STACK_MAIN" }
+      ]
+    },
+    {
+      "label": "Đổi màu hỗ trợ",
+      "description": "Chọn SS_SUPPORT và đổi màu sang cam #FF8C42.",
+      "caption": "Đổi màu layer SS_SUPPORT để nhận diện nhanh phần hỗ trợ.",
+      "focus": "auto",
+      "hold": 1.4,
+      "steps": [
+        { "type": "set_layer_color", "layer": "SS_SUPPORT", "color": "#FF8C42" }
+      ]
+    },
+    {
+      "label": "Vẽ đường hỗ trợ",
+      "description": "Vẽ LINE từ [72485.57,4581.56] tới [90285.57,4581.56].",
+      "caption": "Vẽ đường hỗ trợ đúng vị trí trong bản vẽ thật.",
+      "focus": "auto",
+      "hold": 1.4,
+      "steps": [
+        {
+          "type": "command",
+          "name": "LINE",
+          "inputs": [
+            { "point": [72485.57, 4581.56], "hover": 0.7 },
+            { "point": [90285.57, 4581.56], "hover": 0.7 },
+            { "key": "Enter" }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Kiểm tra toàn cảnh",
+      "description": "Thu phóng toàn cảnh để kiểm tra bản vẽ sau thay đổi.",
+      "caption": "Kiểm tra toàn cảnh sau khi đổi màu và vẽ đường.",
+      "focus": "full",
+      "hold": 1.6,
+      "steps": [{ "type": "zoom_extents" }]
+    }
+  ]
+}
