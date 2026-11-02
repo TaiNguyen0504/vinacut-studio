@@ -5,7 +5,7 @@ Studio tự động hóa quay và dựng video marketing 4K 60fps trên **VinaCA
 ## 1. Tải bản cài đặt sẵn (Dành cho Team MKT — không cần cài code)
 
 Nếu chỉ cần cài đặt và sử dụng ngay trên Windows:
-- Tải file **`VinaCut-Studio-0.1.0-Setup.exe`** tại mục **[Releases](https://github.com/TaicoderX/vinacut-studio/releases/latest)** của repository này.
+- Tải file **`VinaCut-Studio-0.1.0-Setup.exe`** tại mục **[Releases](https://github.com/TaiNguyen0504/vinacut-studio/releases/latest)** của repository này.
 - Chạy file `.exe` để cài đặt tự động và mở ứng dụng **VinaCut Studio**.
 - *(Lưu ý: Lần đầu mở trên máy mới, nếu Windows SmartScreen hiện bảng xanh "Windows protected your PC", bấm **More info** -> **Run anyway**).*
 
@@ -17,7 +17,7 @@ Yêu cầu: **Node.js >= 20 LTS** trên Windows 10/11 (64-bit).
 
 ```powershell
 # Bước 1: Clone mã nguồn về máy
-git clone https://github.com/TaicoderX/vinacut-studio.git
+git clone https://github.com/TaiNguyen0504/vinacut-studio.git
 cd vinacut-studio
 
 # Bước 2: Cài đặt thư viện (Electron, React, Vite, FFmpeg-static...)
