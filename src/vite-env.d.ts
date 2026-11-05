@@ -76,11 +76,14 @@ export type ProductionProgress = {
 
 export type SceneOverride = { description?: string; focus?: FocusRegion };
 
+export type ReasoningEffort = 'auto' | 'none' | 'low' | 'medium' | 'high' | 'max';
+
 type AiPayload = {
   provider: string;
   baseUrl: string;
   apiKey: string;
   model: string;
+  effort?: ReasoningEffort | string;
 };
 
 declare global {

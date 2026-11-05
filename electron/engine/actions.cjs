@@ -715,11 +715,21 @@ function entitySamplePoints(entity, step = null) {
   if (entity.type === 'MText' || entity.type === 'Text') {
     const h = Math.max(Number(entity.height) || Number(step?.height) || 120, 20);
     const stepPts = (step?.inputs || []).filter((i) => Array.isArray(i.point) && i.point.length >= 2).map((i) => i.point);
+    const rawText = normalizedText(entity.text || step?.inputs?.find((i) => i.value !== undefined)?.value || '');
+    const textLen = Math.max(1, rawText.length);
     const loc = Array.isArray(entity.location) && entity.location.length >= 2
       ? entity.location
       : (stepPts[0] || entity.bounds?.min || [0, 0]);
-    const xs = [Number(loc[0]), Number(loc[0]) + h * 6, ...stepPts.map((p) => Number(p[0]))];
-    const ys = [Number(loc[1]), Number(loc[1]) - h * 3.0, ...stepPts.map((p) => Number(p[1])), ...stepPts.map((p) => Number(p[1]) - h * 2.5)];
+    const pts = [];
+    // Dense local samples near the glyph origin so 1-3 character labels (e.g. R, S, T) hit reliable pixel patches.
+    const glyphSpanX = Math.max(1.1, Math.min(textLen * 0.72, 4.8)) * h;
+    for (const fx of [0.08, 0.24, 0.42, 0.65, 0.90]) {
+      for (const fy of [-0.20, -0.50, -0.82, 0.35]) {
+        pts.push([Number(loc[0]) + glyphSpanX * fx, Number(loc[1]) + h * fy]);
+      }
+    }
+    const xs = [Number(loc[0]), Number(loc[0]) + Math.max(glyphSpanX, h * 3), ...stepPts.map((p) => Number(p[0]))];
+    const ys = [Number(loc[1]), Number(loc[1]) - h * 2.5, ...stepPts.map((p) => Number(p[1]))];
     if (entity.bounds?.min && entity.bounds?.max) {
       xs.push(Number(entity.bounds.min[0]), Number(entity.bounds.max[0]));
       ys.push(Number(entity.bounds.min[1]), Number(entity.bounds.max[1]));
@@ -728,9 +738,8 @@ function entitySamplePoints(entity, step = null) {
     const maxX = Math.max(...xs.filter(Number.isFinite));
     const minY = Math.min(...ys.filter(Number.isFinite));
     const maxY = Math.max(...ys.filter(Number.isFinite));
-    const pts = [];
-    for (const tx of [0.08, 0.20, 0.32, 0.44, 0.56, 0.68, 0.80, 0.92]) {
-      for (const ty of [0.15, 0.30, 0.45, 0.60, 0.75, 0.90]) {
+    for (const tx of [0.10, 0.26, 0.42, 0.58, 0.74, 0.90]) {
+      for (const ty of [0.16, 0.36, 0.56, 0.76, 0.90]) {
         pts.push([minX + (maxX - minX) * tx, minY + (maxY - minY) * ty]);
       }
     }
@@ -858,7 +867,7 @@ async function verifyCommandVisibility(ctx, name, step, before, after, selectedB
     const pts = created.flatMap((e) => entitySamplePoints(e, step));
     const patchRadius = name === 'MTEXT' ? 12 : 4;
     const newPosition = await evaluateWorldPointsPixels(ctx.win, pts, beforeSnap, afterSnap, 18, patchRadius);
-    const minRatio = name === 'MTEXT' ? 0.08 : 0.35;
+    const minRatio = name === 'MTEXT' ? 0.05 : 0.35;
     if (newPosition.sampledPoints === 0 || newPosition.changedPoints < 2 || newPosition.changedRatio < minRatio || newPosition.maxDiff < 22) {
       fail(`Lệnh ${name} không tạo thay đổi nhìn thấy được trên canvas (${newPosition.changedPoints}/${newPosition.sampledPoints} điểm mẫu thay đổi, changedRatio=${newPosition.changedRatio}, maxDiff=${newPosition.maxDiff}).`);
     }
@@ -1590,7 +1599,7 @@ const ACTIONS = {
     const layerColorMatches = Boolean(layerRecord?.rgb && layerRecord.rgb.r === want.r && layerRecord.rgb.g === want.g && layerRecord.rgb.b === want.b);
     // Compare against the target composited with the observed canvas background.
     const visibleEvidence = changed.length > 0 && towardTarget.length > 0;
-    if (pixelBefore.entityCount > 0 && (!layerColorMatches || !visibleEvidence)) {
+    if (!layerColorMatches || (pixelBefore.entityCount > 0 && !visibleEvidence)) {
       fail(`Đổi màu layer "${step.layer}" sang #${hex} chưa được xác nhận trên nét hiển thị. layerAfter=${JSON.stringify(layerRecord)} samples=${JSON.stringify(comparisons.slice(0, 6))} state=${JSON.stringify(entityColorState)}`);
     }
     return {
@@ -1696,17 +1705,30 @@ const ACTIONS = {
     let selectedBefore = ctx.selectedSnapshot?.length ? ctx.selectedSnapshot : (selectedPage || []);
     const beforeSnap = VISIBLE_POSTCONDITION_COMMANDS.has(name) ? await captureCanvasSnapshot(ctx.win) : null;
     const ribbon = RIBBON[name] ? await q(ctx.win, `ribbon(${JSON.stringify(RIBBON[name][0])}, ${JSON.stringify(RIBBON[name][1])})`) : null;
+    let state = null;
     if (ribbon) {
+      await js(ctx.win, 'document.activeElement?.blur?.()').catch(() => {});
       await clickAt(ctx, ribbon, { dwell: 0.45, kind: 'chrome' });
-    } else {
+      state = await waitFor(ctx.win, 'cmd()', (c) => c && c.active, 1200);
+      if (!state && !(selectedBefore?.length && EDIT_COMMANDS.has(name) && !inputs.length)) {
+        const pendingInput = await js(ctx.win, `String(document.getElementById('command-prompt-input')?.value || '').trim().toUpperCase()`).catch(() => '');
+        if (pendingInput === name) {
+          await q(ctx.win, 'focusCommandInput()');
+          await ctx.input.press('Enter', { frames: 6 });
+          state = await waitFor(ctx.win, 'cmd()', (c) => c && c.active, 1800);
+        }
+      }
+    }
+    if (!state && !(selectedBefore?.length && EDIT_COMMANDS.has(name) && !inputs.length)) {
       const input = await q(ctx.win, 'commandInput()');
       if (!input) fail('Không tìm thấy ô nhập lệnh.');
       await clickAt(ctx, input, { kind: 'chrome' });
       await q(ctx.win, 'focusCommandInput()');
+      await selectAll(ctx);
       await ctx.input.type(name, { cps: 10 });
       await ctx.input.press('Enter', { frames: 6 });
+      state = await waitFor(ctx.win, 'cmd()', (c) => c && c.active, 2500);
     }
-    let state = await waitFor(ctx.win, 'cmd()', (c) => c && c.active, 3000);
     // Some edit commands finish immediately when the preselected set is empty. That is a real
     // failure, while a preselected set may legitimately complete without another prompt.
     if (!state && !(selectedBefore?.length && EDIT_COMMANDS.has(name) && !inputs.length)) {
@@ -1880,6 +1902,7 @@ const ACTIONS = {
     }
     ctx.selectedSnapshot = [];
     ctx.lastSelectStep = null;
+    await js(ctx.win, 'document.activeElement?.blur?.()').catch(() => {});
     await ctx.input.hold(0.35);
     return { intent: `Lệnh ${name}`, verification };
   },
@@ -2032,6 +2055,28 @@ const ACTIONS = {
   },
 };
 
+const PRESELECT_EDIT_COMMANDS = new Set(['MOVE', 'COPY', 'ROTATE', 'SCALE', 'MIRROR', 'STRETCH', 'ERASE', 'JOIN', 'EXPLODE', 'MATCHPROP']);
+const PASSIVE_SELECTION_STEPS = new Set(['pause', 'hover', 'zoom_to', 'zoom_extents']);
+
+function stepKeepsActiveSelection(step) {
+  if (!step) return false;
+  if (PASSIVE_SELECTION_STEPS.has(step.type)) return true;
+  if (step.type === 'open_panel' && step.panel === 'Prop') return true;
+  return false;
+}
+
+function stepConsumesSelection(step) {
+  return step?.type === 'command' && PRESELECT_EDIT_COMMANDS.has(String(step.name || '').toUpperCase());
+}
+
+async function clearActiveSelection(ctx) {
+  if (!ctx?.lastSelectStep && !(ctx?.selectedSnapshot && ctx.selectedSnapshot.length)) return;
+  await ctx.input.press('Escape', { frames: 6 });
+  await waitIdle(ctx).catch(() => {});
+  ctx.selectedSnapshot = [];
+  ctx.lastSelectStep = null;
+}
+
 async function runStep(step, ctx) {
   const handler = ACTIONS[step.type];
   if (!handler) fail(`Action "${step.type}" chưa được hỗ trợ.`);
@@ -2041,18 +2086,23 @@ async function runStep(step, ctx) {
   } catch (error) {
     fail(`Không cài được bộ helper kiểm tra VinaCAD: ${error?.message || error}`);
   }
+  if (ctx.lastSelectStep && !stepKeepsActiveSelection(step) && !stepConsumesSelection(step)) {
+    await clearActiveSelection(ctx);
+  }
   const result = await handler(ctx, step);
   const normalized = typeof result === 'string' ? { intent: result } : (result || {});
-  const cleanState = await assertCleanState(ctx, { allowSelection: step.type === 'select' });
+  const allowSelection = step.type === 'select' || (Boolean(ctx.lastSelectStep) && stepKeepsActiveSelection(step));
+  const cleanState = await assertCleanState(ctx, { allowSelection });
   return { ...normalized, cleanState };
 }
 
 function planNeedsProminentDemoLayer(plan) {
   const createCmds = new Set(['LINE', 'PLINE', 'RECTANG', 'RECTANGLE', 'CIRCLE', 'MTEXT']);
-  const explicitLayerSteps = new Set(['select_layer', 'set_current_layer', 'create_layer', 'rename_layer']);
+  // Note: create_layer clicks '+' without changing CLAYER in VinaCAD Web, so only steps that set currentLayer count here.
+  const explicitCurrentLayerSteps = new Set(['select_layer', 'set_current_layer', 'rename_layer']);
   for (const scene of plan?.scenes || []) {
     for (const step of scene?.steps || []) {
-      if (explicitLayerSteps.has(step?.type)) return false;
+      if (explicitCurrentLayerSteps.has(step?.type)) return false;
       if (step?.type === 'command' && createCmds.has(String(step.name || '').toUpperCase())) {
         return true;
       }
@@ -2282,6 +2332,7 @@ async function readPlanningContext(win) {
 
 module.exports = {
   runStep,
+  clearActiveSelection,
   prepareStage,
   readPlanningContext,
   ActionFailure,

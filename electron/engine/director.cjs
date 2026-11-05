@@ -4,7 +4,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createRecorderWindow, ensureViewport, FrameRecorder, InputDriver, VIEW_W, VIEW_H } = require('./capture.cjs');
 const vinacad = require('./vinacad.cjs');
-const { runStep, prepareStage, readPlanningContext } = require('./actions.cjs');
+const { runStep, clearActiveSelection, prepareStage, readPlanningContext } = require('./actions.cjs');
 const { renderVideo, OUTPUTS } = require('./render.cjs');
 
 const KEEP_SESSIONS = 4;
@@ -106,6 +106,9 @@ async function recordPlan({ plan, context, drawingPath, sessionsRoot, signal, on
       await input.hold(scene.hold || 1.6);
       record.end = rec.time;
       scenes.push(record);
+    }
+    if (actionContext.lastSelectStep) {
+      await clearActiveSelection(actionContext);
     }
     await input.hold(1.4);
     const finalCheckpoint = await rec.saveCheckpoint('final');

@@ -47,7 +47,7 @@ const ACTION_DOCS = [
   '{ "type": "rename_layer", "layer": "A-WALLS", "to": "A-WALLS-MAIN" }  // double-click tên; layer đó cũng trở thành layer hiện hành',
   '{ "type": "set_layer_color", "layer": "A-WALLS-MAIN", "color": "#FFB347" }  // đổi màu qua bảng chọn màu, bản vẽ đổi màu thật',
   '{ "type": "toggle_layer", "layer": "A-FURNITURE", "property": "visible" }  // visible = tắt/bật hiển thị (đóng băng), không áp dụng cho layer hiện hành; locked = khoá/mở khoá',
-  '{ "type": "create_layer", "name": "A-NEW" }  // tạo layer mới bằng nút + và đặt tên (name tuỳ chọn)',
+  '{ "type": "create_layer", "name": "A-NEW" }  // tạo layer mới bằng nút + (CHÚ Ý: không tự đặt làm layer hiện hành; nếu muốn vẽ lên layer mới phải gọi thêm select_layer trước lệnh vẽ)',
   '{ "type": "delete_layer", "layer": "TEMP-EMPTY" }  // chỉ layer trống (không chứa đối tượng), không phải layer 0',
   '{ "type": "command", "name": "RECTANG", "inputs": [ { "point": [1500, 5600], "hover": 1.0 }, { "point": [3300, 7300], "hover": 1.0 } ] }  // trọn vẹn trong 1 bước command gồm 2 góc đối diện; KHÔNG thêm key Enter',
     '   // inputs: { "point": [x, y] } = click đúng toạ độ bản vẽ (có bắt điểm thật);',
@@ -78,10 +78,10 @@ function buildSystemPrompt() {
     'Danh mục action được phép (không được bịa action khác):',
     ...ACTION_DOCS,
     'Quy tắc bắt buộc:',
-    '- 3 đến 6 cảnh, mỗi cảnh 1–10 bước, tổng thời lượng mục tiêu bám theo brief (mặc định 30–40 giây).',
+    '- 3 đến 8 cảnh, mỗi cảnh 1–10 bước, tổng thời lượng mục tiêu bám theo brief (mặc định 30–60 giây).',
     '- Làm ĐÚNG những gì brief yêu cầu, theo đúng thứ tự; không thêm thao tác thừa không phục vụ thông điệp.',
     '- Phụ đề mô tả đúng điều đang diễn ra trên màn hình ở cảnh đó; không hứa hẹn điều không quay.',
-    '- Chỉ dùng tên layer có trong UI_STATE.layers (hoặc tên mới đã tạo/đổi ở bước trước).',
+    '- Chỉ dùng tên layer có trong UI_STATE.layers (hoặc tên mới đã tạo/đổi ở bước trước). Lưu ý create_layer chỉ thêm dòng layer mới chứ KHÔNG tự đặt làm layer hiện hành; muốn vẽ lên layer vừa tạo bắt buộc gọi { "type": "select_layer", "layer": "..." } trước lệnh vẽ, và chỉ gọi set_layer_color trên layer có đối tượng (hoặc sẽ vẽ đối tượng lên đó ngay sau).',
     '- Khi kịch bản có lệnh tạo hình mới (LINE, PLINE, RECTANG, CIRCLE, MTEXT) mà không yêu cầu chọn layer cụ thể trước đó, hệ thống sẽ tự đặt layer nổi bật VINACUT-DEMO (màu cam #FFB347) làm layer hiện hành để nét mới tương phản rõ với đường trắng có sẵn.',
     '- MỌI HÌNH MỚI TẠO (LINE, PLINE, RECTANG, CIRCLE, MTEXT, OFFSET) BẮT BUỘC ĐẶT TRONG VÙNG TRỐNG (ưu tiên OPEN_AREAS ở giữa các phòng), TUYỆT ĐỐI KHÔNG vẽ đè dọc theo đoạn tường/đường có sẵn. Ví dụ với PLINE hoặc RECTANG trong phòng khách, hãy dùng các điểm trong OPEN_AREAS (như suggestedPolyline [[3800, 2600], [6300, 2600], [6300, 3800]] hoặc suggestedRect [[3800, 2500], [6400, 3900]]), KHÔNG nối các góc tường bao [200,200]–[6900,200]–[6900,3200].',
     '- Với OFFSET khoảng cách 200 trên bản vẽ mẫu: hãy chọn đoạn tường trong tại [2100, 200] và điểm phía offset vào lòng phòng tại [2100, 500] (để nét mới tạo tại y=400 trong vùng trống); TUYỆT ĐỐI KHÔNG offset tường ngoài y=0 vào trong 200 vì sẽ trùng khít lên tường trong y=200.',
@@ -138,14 +138,51 @@ function withinExtents(point, extents) {
 function validatePlan(raw, context = {}) {
   const errors = [];
   const repairs = [];
-  const layers = new Map((context.layers || []).map((l) => [String(l.name).toLowerCase(), { ...l }]));
+  const layers = new Map((context.layers || []).map((l) => [String(l.name).toLowerCase(), { ...l, entityCount: Number(l.entityCount || 0) }]));
   const extents = context.extents || null;
   const scenesIn = Array.isArray(raw?.scenes) ? raw.scenes : [];
   if (!scenesIn.length) errors.push('Kịch bản không có cảnh nào.');
-  if (scenesIn.length > 7) errors.push('Tối đa 7 cảnh.');
+  if (scenesIn.length > 10) errors.push('Tối đa 10 cảnh.');
   let currentLayer = String(context.currentLayer || '0').toLowerCase();
+  let explicitCurrentLayerChosen = false;
+  const createCmdSet = new Set(['LINE', 'PLINE', 'RECTANG', 'RECTANGLE', 'CIRCLE', 'MTEXT']);
 
-  const scenes = scenesIn.slice(0, 7).map((scene, si) => {
+  const laterDrawsOnLayer = (targetLayerKey, fromSceneIdx, fromStepIdx) => {
+    let simLayer = currentLayer;
+    let simExplicit = explicitCurrentLayerChosen;
+    let currentKey = targetLayerKey;
+    for (let sIdx = fromSceneIdx; sIdx < Math.min(scenesIn.length, 10); sIdx++) {
+      const stList = Array.isArray(scenesIn[sIdx]?.steps) ? scenesIn[sIdx].steps.slice(0, 12) : [];
+      const startK = sIdx === fromSceneIdx ? fromStepIdx + 1 : 0;
+      for (let kIdx = startK; kIdx < stList.length; kIdx++) {
+        const st = stList[kIdx];
+        const stType = String(st?.type || '').toLowerCase();
+        if (stType === 'select_layer' || stType === 'set_current_layer') {
+          simLayer = String(st?.layer || '').toLowerCase();
+          simExplicit = true;
+        } else if (stType === 'rename_layer') {
+          const oldKey = String(st?.layer || '').toLowerCase();
+          const newKey = String(st?.to || st?.newName || '').trim().toLowerCase();
+          if (newKey) {
+            if (oldKey === currentKey) currentKey = newKey;
+            simLayer = newKey;
+            simExplicit = true;
+          }
+        } else if (stType === 'delete_layer') {
+          if (String(st?.layer || '').toLowerCase() === simLayer) simLayer = '0';
+        } else if (stType === 'command') {
+          const cmdName = String(st?.name || st?.command || '').trim().toUpperCase();
+          if (createCmdSet.has(cmdName)) {
+            const effectiveLayer = (!simExplicit && simLayer === '0') ? 'vinacut-demo' : simLayer;
+            if (effectiveLayer === currentKey) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  const scenes = scenesIn.slice(0, 10).map((scene, si) => {
     const where = `Cảnh ${si + 1}`;
     const stepsIn = Array.isArray(scene?.steps) ? scene.steps : [];
     if (stepsIn.length > 12) errors.push(`${where}: tối đa 12 bước.`);
@@ -178,7 +215,8 @@ function validatePlan(raw, context = {}) {
           if (layer) {
             steps.push({ type, layer: layer.name });
             // Both variants click the layer row and make it current in VinaCAD.
-            if (type === 'select_layer' || type === 'set_current_layer') currentLayer = layer.name.toLowerCase();
+            currentLayer = layer.name.toLowerCase();
+            explicitCurrentLayerChosen = true;
           }
           break;
         }
@@ -192,6 +230,7 @@ function validatePlan(raw, context = {}) {
             layers.set(to.toLowerCase(), { ...layer, name: to });
             // The double-click that opens the rename box also makes the layer current.
             currentLayer = to.toLowerCase();
+            explicitCurrentLayerChosen = true;
             steps.push({ type, layer: layer.name, to });
           }
           break;
@@ -201,7 +240,9 @@ function validatePlan(raw, context = {}) {
           const layer = layerRef(step.layer);
           const color = String(step.color || step.hex || '').trim();
           if (!/^#?[0-9a-fA-F]{6}$/.test(color)) errors.push(`${at}: màu "${color}" phải dạng #RRGGBB.`);
-          else if (layer && layer.colorEffect && layer.colorEffect.canChangeVisible === false) {
+          else if (layer && Number(layer.entityCount || 0) === 0 && !laterDrawsOnLayer(layer.name.toLowerCase(), si, ki)) {
+            errors.push(`${at}: layer "${layer.name}" đang trống (0 đối tượng) nên đổi màu không tạo thay đổi trên bản vẽ; nếu tạo layer mới để vẽ, hãy thêm { "type": "select_layer", "layer": "${layer.name}" } trước lệnh vẽ, hoặc đổi màu một layer đang có đối tượng.`);
+          } else if (layer && Number(layer.entityCount || 0) > 0 && layer.colorEffect && layer.colorEffect.canChangeVisible === false) {
             errors.push(`${at}: layer "${layer.name}" không có bằng chứng nét trên canvas đổi theo màu layer (${layer.colorEffect.basis || 'chưa xác minh'}). Hãy chọn layer có colorEffect.canChangeVisible=true hoặc đổi cảnh.`);
           } else if (layer) {
             if (type === 'color_layer') {
@@ -294,6 +335,11 @@ function validatePlan(raw, context = {}) {
               repairs.push({ kind: 'default_mtext_height', scene: si + 1, step: ki + 1, before: null, after: resolvedHeight, reason: 'Gán chiều cao chữ mặc định theo tỷ lệ bản vẽ khi thiếu trường height' });
             }
             steps.push({ type, name, inputs, height: resolvedHeight });
+            if (explicitCurrentLayerChosen && layers.has(currentLayer)) {
+              const cur = layers.get(currentLayer);
+              cur.entityCount = Number(cur.entityCount || 0) + 1;
+              cur.colorEffect = { canChangeVisible: true, basis: 'created-by-plan' };
+            }
           } else {
             const noLeadingEnter = new Set(['MOVE', 'ROTATE', 'SCALE', 'MIRROR', 'TRIM', 'EXTEND', 'FILLET', 'CHAMFER', 'STRETCH', 'ERASE', 'JOIN', 'EXPLODE', 'BREAK', 'MATCHPROP']);
             if (noLeadingEnter.has(name) && inputs[0]?.key === 'Enter') errors.push(`${at}: ${name} bắt đầu bằng base/giá trị sau select, không chèn Enter đầu vào.`);
@@ -317,6 +363,11 @@ function validatePlan(raw, context = {}) {
               errors.push(`${at}: OFFSET phải hoàn tất trọn vẹn trong 1 bước command gồm đủ 4 inputs: [{ "value": "khoảng_cách" }, { "point": [x_tường, y_tường] }, { "point": [x_phía_offset, y_phía_offset] }, { "key": "Escape" }] (không tách lệnh ra nhiều cảnh).`);
             }
             steps.push({ type, name, inputs });
+            if (createCmdSet.has(name) && explicitCurrentLayerChosen && layers.has(currentLayer)) {
+              const cur = layers.get(currentLayer);
+              cur.entityCount = Number(cur.entityCount || 0) + 1;
+              cur.colorEffect = { canChangeVisible: true, basis: 'created-by-plan' };
+            }
           }
           break;
         }
@@ -547,7 +598,9 @@ function presetPlan(prompt) {
   const wantsLayer = /layer|lớp/.test(text);
   const wantsLockHide = wantsLayer && /khoá|khóa|lock|ẩn|tắt hiển thị|đóng băng|freeze/.test(text);
   const wantsEdit = wantsLayer && /đổi tên|đổi màu|màu|xoá|xóa|rename|colou?r|delete/.test(text);
-  const wantsDraw = /osnap|bắt điểm|[\s,.:(]vẽ[\s,.:)]|rectang|hình chữ nhật|\bline\b|đường thẳng/.test(text);
+  const wantsRibbonDraw = /ribbon\s*draw|r,\s*s,\s*t/.test(text)
+    || ((/circle|hình tròn/.test(text)) && (/rectang|hình chữ nhật/.test(text)));
+  const wantsDraw = wantsRibbonDraw || /osnap|bắt điểm|[\s,.:(]vẽ[\s,.:)]|rectang|hình chữ nhật|circle|hình tròn|polyline|pline|\bline\b|đường thẳng/.test(text);
   if (wantsLockHide && !wantsEdit && !wantsDraw) {
     return {
       title: 'Kiểm soát Layer: khoá & ẩn',
@@ -582,16 +635,40 @@ function presetPlan(prompt) {
       ],
     };
   }
+  if (wantsRibbonDraw) {
+    return {
+      title: 'Ribbon Draw trên VinaCAD Web',
+      scenes: [
+        { label: 'Di chuyển tới khu vực vẽ', description: 'Mở bản vẽ và phóng tới khu vực cần thao tác trên trình duyệt.', focus: 'auto', hold: 1.2,
+          steps: [{ type: 'zoom_to', min: [3500, 500], max: [6800, 4100] }] },
+        { label: 'Công cụ vẽ hình tròn', description: 'Chọn công cụ Hình tròn từ Ribbon Draw, xác định tâm và bán kính.', focus: 'auto', hold: 1.3,
+          steps: [{ type: 'command', name: 'CIRCLE', inputs: [{ point: [4250, 3350], hover: 0.6 }, { value: '320' }] }] },
+        { label: 'Tạo đường thẳng liên tiếp', description: 'Bổ sung các đường nét kỹ thuật trực quan ngay trong môi trường làm việc.', focus: 'auto', hold: 1.3,
+          steps: [{ type: 'command', name: 'LINE', inputs: [{ point: [3850, 2450], hover: 0.6 }, { point: [6450, 2450], hover: 0.6 }, { key: 'Enter' }] }] },
+        { label: 'Công cụ tạo hình chữ nhật', description: 'Chọn Hình chữ nhật trên Ribbon Draw và xác định hai góc đối diện.', focus: 'auto', hold: 1.3,
+          steps: [{ type: 'command', name: 'RECTANG', inputs: [{ point: [5200, 3050], hover: 0.6 }, { point: [6450, 3750], hover: 0.6 }] }] },
+        { label: 'Bổ sung đường nối đa đoạn', description: 'Kết hợp công cụ Đường nối (PLINE) để hoàn thiện hình học chi tiết.', focus: 'auto', hold: 1.3,
+          steps: [{ type: 'command', name: 'PLINE', inputs: [{ point: [3950, 820], hover: 0.5 }, { point: [6350, 820], hover: 0.5 }, { point: [6350, 1550], hover: 0.5 }, { key: 'Enter' }] }] },
+        { label: 'Hoàn thiện ký hiệu R, S, T', description: 'Gắn ký hiệu R, S, T trực tiếp trên trình duyệt và kiểm tra toàn cảnh.', focus: 'auto', hold: 1.8,
+          steps: [
+            { type: 'command', name: 'MTEXT', height: 180, inputs: [{ point: [4150, 2900] }, { point: [4650, 2600] }, { value: 'R' }] },
+            { type: 'command', name: 'MTEXT', height: 180, inputs: [{ point: [5680, 2900] }, { point: [6180, 2600] }, { value: 'S' }] },
+            { type: 'command', name: 'MTEXT', height: 180, inputs: [{ point: [4950, 1420] }, { point: [5450, 1120] }, { value: 'T' }] },
+            { type: 'zoom_extents' },
+          ] },
+      ],
+    };
+  }
   if (wantsDraw) {
     return {
       title: 'Vẽ nhanh với bắt điểm trên VinaCAD Web',
       scenes: [
         { label: 'Toàn cảnh bản vẽ', description: 'Mặt bằng kỹ thuật mở ngay trên trình duyệt với VinaCAD Web.', focus: 'full', hold: 1.4,
           steps: [{ type: 'pause', seconds: 0.8 }] },
-        { label: 'Vẽ tủ bếp bằng RECTANG', description: 'Vẽ hình chữ nhật, bắt điểm góc tường chính xác tuyệt đối.', focus: 'auto', hold: 1.4,
-          steps: [{ type: 'command', name: 'RECTANG', inputs: [{ point: [7100, 3800], hover: 1.0 }, { point: [8300, 3200] }] }] },
-        { label: 'Vẽ đường bằng LINE', description: 'Bắt trung điểm và điểm cuối để vẽ đường thẳng nhanh, đúng kích thước.', focus: 'auto', hold: 1.4,
-          steps: [{ type: 'command', name: 'LINE', inputs: [{ point: [200, 2300], hover: 0.9 }, { point: [6900, 2300], hover: 0.9 }, { key: 'Enter' }] }] },
+        { label: 'Vẽ khung bằng RECTANG', description: 'Vẽ hình chữ nhật nhanh và chuẩn xác trên vùng sàn trống.', focus: 'auto', hold: 1.4,
+          steps: [{ type: 'command', name: 'RECTANG', inputs: [{ point: [3900, 2600], hover: 0.9 }, { point: [5500, 3800], hover: 0.9 }] }] },
+        { label: 'Vẽ đường bắt điểm bằng LINE', description: 'Bắt điểm đầu tường và nối đường thẳng chính xác tuyệt đối.', focus: 'auto', hold: 1.4,
+          steps: [{ type: 'command', name: 'LINE', inputs: [{ point: [6900, 3200], hover: 1.0 }, { point: [5500, 3200], hover: 0.9 }, { key: 'Enter' }] }] },
         { label: 'Kết quả', description: 'Bản vẽ cập nhật tức thì, sẵn sàng chia sẻ cho cả nhóm.', focus: 'full', hold: 1.8,
           steps: [{ type: 'zoom_extents' }, { type: 'pause', seconds: 0.6 }] },
       ],

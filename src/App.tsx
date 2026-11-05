@@ -36,6 +36,7 @@ import type {
   PlanStep,
   ProductionProgress,
   ProductionVideo,
+  ReasoningEffort,
   RecordedAction,
   RecordedScene,
   SceneItem,
@@ -108,12 +109,17 @@ const scriptPresets = [
   {
     title: 'Quản lý & Đổi màu Layer',
     prompt:
-      'Tạo video quảng cáo khoảng 30 giây cho tính năng Layer trên VinaCAD Web:\n1. Mở bảng Lớp ở thanh bên trái.\n2. Chọn layer A-WALLS và đổi tên thành A-WALLS-MAIN.\n3. Đổi màu layer A-WALLS-MAIN sang màu cam (#FFB347) để thấy tường trên bản vẽ đổi màu ngay.\n4. Quay về toàn cảnh mặt bằng, sau đó xoá layer trống TEMP-EMPTY.',
+      'Tạo video quảng cáo khoảng 30 giây cho tính năng Quản lý Layer thông minh trên VinaCAD Web (theo chuẩn MKT):\n1. Mở bảng Lớp ở thanh bên trái để xem các lớp trong bản vẽ.\n2. Chọn layer A-WALLS và đổi tên thành A-WALLS-MAIN ngay trong danh sách.\n3. Đổi màu layer A-WALLS-MAIN sang màu cam (#FFB347) để toàn bộ tường cập nhật màu tức thời.\n4. Kiểm tra thay đổi trực quan trên toàn cảnh mặt bằng.\n5. Quản lý và xoá layer trống TEMP-EMPTY khi không còn sử dụng.',
+  },
+  {
+    title: 'Ribbon Draw: Hình tròn, Chữ nhật, Ký hiệu',
+    prompt:
+      'Tạo video giới thiệu nhóm công cụ Ribbon Draw trên VinaCAD Web:\n1. Mở bản vẽ và phóng tới vùng sàn trống cần thao tác.\n2. Dùng công cụ vẽ hình tròn (CIRCLE) từ Ribbon Draw để tạo chi tiết tròn trên mặt bằng.\n3. Dùng công cụ đường thẳng (LINE) kết hợp bắt điểm để bổ sung nét kỹ thuật.\n4. Dùng công cụ hình chữ nhật (RECTANG) tạo khung chi tiết ngay bên cạnh.\n5. Dùng đường nối (PLINE) vẽ đường bao bổ sung và gắn ký hiệu chữ R, S, T bằng MTEXT rồi thu phóng toàn cảnh.',
   },
   {
     title: 'Vẽ nhanh & Bắt điểm Osnap',
     prompt:
-      'Tạo video quảng cáo tính năng vẽ nhanh với bắt điểm (Osnap) trên VinaCAD Web:\n1. Mở đầu bằng toàn cảnh mặt bằng.\n2. Vẽ một tủ bếp bằng lệnh RECTANG, bắt đúng góc tường trong bếp.\n3. Vẽ một đường LINE ngang phòng khách, cho thấy marker bắt điểm.\n4. Kết thúc ở toàn cảnh bản vẽ.',
+      'Tạo video quảng cáo tính năng vẽ nhanh với bắt điểm (Osnap) trên VinaCAD Web:\n1. Mở đầu bằng toàn cảnh mặt bằng.\n2. Vẽ một khung thiết bị bằng lệnh RECTANG trong vùng sàn trống phòng khách.\n3. Vẽ một đường LINE kèm dừng chuột hiển thị marker bắt điểm.\n4. Kết thúc ở toàn cảnh bản vẽ.',
   },
   {
     title: 'Khoá & Ẩn Layer',
@@ -339,6 +345,7 @@ function App() {
   const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(defaultModelCatalog);
   const [provider, setProvider] = useState('Google');
   const [model, setModel] = useState('gemini-3.8-flash');
+  const [effort, setEffort] = useState<ReasoningEffort>('auto');
   const [customModelMode, setCustomModelMode] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://generativelanguage.googleapis.com/v1beta');
@@ -429,9 +436,13 @@ function App() {
         const nextProvider = config.provider || 'Google';
         const nextBase = normalizeSavedBaseUrl(nextProvider, config.baseUrl);
         const nextModel = normalizeSavedModel(nextProvider, config.model);
+        const nextEffort: ReasoningEffort = ['auto', 'none', 'low', 'medium', 'high', 'max'].includes(String(config.effort || ''))
+          ? (config.effort as ReasoningEffort)
+          : 'auto';
         setProvider(nextProvider);
         setBaseUrl(nextBase);
         setModel(nextModel);
+        setEffort(nextEffort);
         if (nextModel && nextModel !== 'custom-model-id') {
           setModelCatalog((prev) => {
             const existing = prev[nextProvider] || defaultModelCatalog[nextProvider] || [];
@@ -486,8 +497,17 @@ function App() {
     return () => URL.revokeObjectURL(url);
   }, [footageBytes]);
 
-  const persistAiConfig = (nextProvider = provider, nextModel = model, nextBaseUrl = baseUrl, nextKey = apiKey) => {
-    localStorage.setItem('vinacut-ai-config', JSON.stringify({ provider: nextProvider, model: nextModel, baseUrl: nextBaseUrl, apiKey: nextKey }));
+  const persistAiConfig = (
+    nextProvider = provider,
+    nextModel = model,
+    nextBaseUrl = baseUrl,
+    nextKey = apiKey,
+    nextEffort: ReasoningEffort = effort,
+  ) => {
+    localStorage.setItem(
+      'vinacut-ai-config',
+      JSON.stringify({ provider: nextProvider, model: nextModel, baseUrl: nextBaseUrl, apiKey: nextKey, effort: nextEffort }),
+    );
   };
 
   const mergeDiscoveredModels = (targetProvider: string, discovered: string[]) => {
@@ -612,6 +632,7 @@ function App() {
         baseUrl: normalizedBase,
         apiKey: cleanKey,
         model: model.trim(),
+        effort,
         prompt,
         knowledge: knowledgeText.trim(),
         dwgPath: selectedDwgPath,
@@ -867,7 +888,7 @@ function App() {
     setConnectionTesting(true);
     setConnectionMessage('Đang kiểm tra kết nối và đồng bộ danh sách model…');
     try {
-      const res = await window.vinacut.testConnection({ provider, baseUrl: normalizedBase, apiKey: cleanApiKey, model: model.trim() });
+      const res = await window.vinacut.testConnection({ provider, baseUrl: normalizedBase, apiKey: cleanApiKey, model: model.trim(), effort });
       if (Array.isArray(res.models) && res.models.length > 0) mergeDiscoveredModels(provider, res.models);
       const finalModel = res.model || model.trim();
       const finalBase = res.baseUrl || normalizedBase;
@@ -1011,7 +1032,7 @@ function App() {
         <div className="simple-header-actions">
           <button className={`ghost-button header-key-btn ${apiKey.trim() ? 'connected' : 'missing'}`} onClick={() => setShowSettings(true)}>
             <KeyRound size={13} />
-            {apiKey.trim() ? `${provider} · ${model}` : 'Dán API Key AI'}
+            {apiKey.trim() ? `${provider} · ${model}${effort !== 'auto' ? ` · ${effort}` : ''}` : 'Dán API Key AI'}
           </button>
           <button
             className="ghost-button"
@@ -1478,7 +1499,7 @@ function App() {
               {lastError
                 ? `Lỗi: ${lastError}`
                 : apiKey.trim()
-                  ? `AI: ${provider} (${model}) · quay offscreen 4K · encoder GPU tự chọn`
+                  ? `AI: ${provider} (${model}${effort !== 'auto' ? ` · effort: ${effort}` : ''}) · quay offscreen 4K · encoder GPU tự chọn`
                   : 'Chưa có API Key: chỉ kịch bản mẫu offline. Dán key để AI hiểu mọi yêu cầu.'}
             </div>
           </aside>
@@ -1540,6 +1561,24 @@ function App() {
                   <input value={model} placeholder="Ví dụ: claude-opus-5-5, deepseek-v4.1-flash, gemini-3.8-flash" onChange={(event) => setModel(event.target.value)} />
                 </label>
               )}
+              <label className="field-label">
+                Mức độ suy luận (Reasoning Effort)
+                <select
+                  value={effort}
+                  onChange={(event) => {
+                    const nextEffort = event.target.value as ReasoningEffort;
+                    setEffort(nextEffort);
+                    persistAiConfig(provider, model, baseUrl, apiKey, nextEffort);
+                  }}
+                >
+                  <option value="auto">Tự động theo model (Mặc định)</option>
+                  <option value="none">Tắt / Tối thiểu (Nhanh nhất)</option>
+                  <option value="low">Thấp (Low — Phản hồi nhanh)</option>
+                  <option value="medium">Trung bình (Medium — Cân bằng)</option>
+                  <option value="high">Cao (High — Kịch bản phức tạp)</option>
+                  <option value="max">Tối đa (Max — Suy luận sâu nhất)</option>
+                </select>
+              </label>
               <label className="field-label">
                 Base URL
                 <input

@@ -89,6 +89,34 @@ async function mainTest() {
   const success = await withFakeFetch([{ status: 200, body: { choices: [{ message: { content: 'OK' } }] } }], () => main.callAiChatInternal({ provider: 'OpenAI', apiKey: 'test-key', baseUrl: 'https://fake/v1', model: 'gpt-test', prompt: 'ping' }));
   assert(success.calls.length === 1 && success.value === 'OK', '200 phải chỉ gọi một lần và trả text');
   rows.push({ kind: '200-success', result: 'PASS', calls: success.calls.length });
+
+  // Reasoning effort checks across Google, Anthropic, OpenAI, Custom + HTTP 400 fallback
+  const googleEffort = main.buildAiRequest({ provider: 'Google', apiKey: 'test-key', model: 'gemini-3.8-flash', effort: 'high', prompt: 'p' });
+  assert(googleEffort.body.generationConfig?.thinkingConfig?.thinkingLevel === 'high', 'Google Gemini 3+: thiếu thinkingLevel=high');
+  const google25Effort = main.buildAiRequest({ provider: 'Google', apiKey: 'test-key', model: 'gemini-2.5-pro', effort: 'medium', prompt: 'p' });
+  assert(google25Effort.body.generationConfig?.thinkingConfig?.thinkingBudget === 4096, 'Google Gemini 2.5: thiếu thinkingBudget=4096');
+  const anthropicEffort = main.buildAiRequest({ provider: 'Anthropic', apiKey: 'test-key', model: 'claude-opus-5-5', effort: 'high', prompt: 'p', json: true, schema });
+  assert(anthropicEffort.body.thinking?.type === 'enabled' && anthropicEffort.body.thinking?.budget_tokens === 10000, 'Anthropic: thiếu thinking budget_tokens=10000');
+  assert(anthropicEffort.body.tool_choice?.type === 'auto', 'Anthropic: khi bật thinking phải dùng tool_choice auto để tránh lỗi 400');
+  const openAiEffort = main.buildAiRequest({ provider: 'OpenAI', apiKey: 'test-key', model: 'gpt-6-astra', effort: 'max', prompt: 'p' });
+  assert(openAiEffort.body.reasoning_effort === 'xhigh' && openAiEffort.body.temperature === undefined, 'OpenAI GPT-6 max: thiếu reasoning_effort=xhigh');
+  const customEffort = main.buildAiRequest({ provider: 'Custom', apiKey: 'test-key', baseUrl: 'https://api.kingofapi.store/v1', model: 'claude-opus-5-5', effort: 'high', prompt: 'p' });
+  assert(customEffort.body.reasoning_effort === 'high' && customEffort.body.temperature === undefined, 'Custom: thiếu reasoning_effort=high');
+  rows.push({ kind: 'builder-effort', result: 'PASS' });
+
+  const googleThoughtFilter = await withFakeFetch([{
+    status: 200,
+    body: { candidates: [{ content: { parts: [{ thought: true, text: 'suy nghĩ nội bộ...' }, { text: '{"title":"clean"}' }] } }] },
+  }], () => main.callAiChatInternal({ provider: 'Google', apiKey: 'test-key', model: 'gemini-4-argon', effort: 'high', prompt: 'p' }));
+  assert(googleThoughtFilter.value === '{"title":"clean"}', `Google thought filter sai: ${googleThoughtFilter.value}`);
+  rows.push({ kind: 'google-thought-filter', result: 'PASS' });
+
+  const effortFallback = await withFakeFetch([
+    { status: 400, body: { error: { message: 'Unrecognized request argument supplied: reasoning_effort' } } },
+    { status: 200, body: { choices: [{ message: { content: 'OK-NO-EFFORT' } }] } },
+  ], () => main.callAiChatInternal({ provider: 'Custom', apiKey: 'test-key', baseUrl: 'https://fake/v1', model: 'legacy-chat', effort: 'high', prompt: 'ping' }));
+  assert(effortFallback.calls.length === 2 && effortFallback.calls[1].body.reasoning_effort === undefined && effortFallback.value === 'OK-NO-EFFORT', 'Fallback effort 400 thất bại');
+  rows.push({ kind: 'fallback-effort', result: 'PASS', calls: effortFallback.calls.length });
 }
 
 const timer = setTimeout(() => app.exit(1), 90000);

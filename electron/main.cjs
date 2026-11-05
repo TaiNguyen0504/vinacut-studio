@@ -173,18 +173,33 @@ function imageMimeType(base64) {
   return String(base64 || '').startsWith('/9j/') ? 'image/jpeg' : 'image/png';
 }
 
+function normalizeReasoningEffort(rawEffort) {
+  const normalized = String(rawEffort || '').trim().toLowerCase();
+  return ['none', 'low', 'medium', 'high', 'max'].includes(normalized) ? normalized : 'auto';
+}
+
 // Pure request builder shared by production calls and the regression checker. Keeping
 // provider-specific schema placement here prevents the test from drifting away from
 // the request that the app actually sends.
-function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, system = '', prompt = '', imageBase64, json = false, schema } = {}) {
+function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, effort = 'auto', system = '', prompt = '', imageBase64, json = false, schema } = {}) {
   const cleanKey = String(apiKey || '').trim();
   const imageMime = imageMimeType(imageBase64);
+  const normalizedEffort = normalizeReasoningEffort(effort);
   if (provider === 'Google') {
     const normalizedBase = normalizeGoogleBaseUrl(baseUrl);
     const requestedModel = String(model || 'gemini-3.8-flash').trim() || 'gemini-3.8-flash';
     const parts = [{ text: String(prompt || '') }];
     if (imageBase64) parts.push({ inline_data: { mime_type: imageMime, data: imageBase64 } });
     const generationConfig = /^gemini-(1|2)\./i.test(requestedModel) ? { temperature: 0.25 } : {};
+    if (normalizedEffort !== 'auto') {
+      if (/^gemini-2\.5/i.test(requestedModel)) {
+        const budgetMap = { none: /pro/i.test(requestedModel) ? 128 : 0, low: 1024, medium: 4096, high: 12288, max: 24576 };
+        generationConfig.thinkingConfig = { thinkingBudget: budgetMap[normalizedEffort] };
+      } else if (!/^gemini-(1|2\.0)/i.test(requestedModel)) {
+        const levelMap = { none: 'minimal', low: 'low', medium: 'medium', high: 'high', max: 'high' };
+        generationConfig.thinkingConfig = { thinkingLevel: levelMap[normalizedEffort] };
+      }
+    }
     if (json) {
       generationConfig.responseMimeType = 'application/json';
       if (schema) generationConfig.responseJsonSchema = schema;
@@ -207,15 +222,20 @@ function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, system = 
     const userContent = imageBase64
       ? [{ type: 'image', source: { type: 'base64', media_type: imageMime, data: imageBase64 } }, { type: 'text', text: prompt }]
       : prompt;
+    const thinkingBudgets = { low: 1024, medium: 4096, high: 10000, max: 16000 };
+    const thinkingBudget = thinkingBudgets[normalizedEffort] || 0;
     const body = {
       model: model || 'claude-sonnet-5-5',
-      max_tokens: 8192,
+      max_tokens: thinkingBudget ? Math.max(8192, thinkingBudget + 4096) : 8192,
       system,
       messages: [{ role: 'user', content: userContent }],
     };
+    if (thinkingBudget) {
+      body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
+    }
     if (json && schema) {
       body.tools = [{ name: 'create_shot_plan', description: 'Return the validated VinaCAD shot plan.', input_schema: schema }];
-      body.tool_choice = { type: 'tool', name: 'create_shot_plan' };
+      body.tool_choice = thinkingBudget ? { type: 'auto' } : { type: 'tool', name: 'create_shot_plan' };
     }
     return {
       provider,
@@ -234,7 +254,15 @@ function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, system = 
     model: chatModel,
     messages: [{ role: 'system', content: system }, { role: 'user', content: userContent }],
   };
-  if (!/^(o\d|gpt-5|gpt-6)/i.test(chatModel)) body.temperature = 0.25;
+  if (normalizedEffort !== 'auto') {
+    body.reasoning_effort = normalizedEffort === 'none'
+      ? (/^o\d/i.test(chatModel) ? 'low' : 'none')
+      : normalizedEffort === 'max'
+        ? (provider === 'OpenAI' && /^(gpt-5\.[2-9]|gpt-6)/i.test(chatModel) ? 'xhigh' : 'high')
+        : normalizedEffort;
+  } else if (!/^(o\d|gpt-5|gpt-6)/i.test(chatModel)) {
+    body.temperature = 0.25;
+  }
   if (json && !(provider === 'Custom' && /^claude/i.test(chatModel))) {
     body.response_format = (schema && provider !== 'Custom')
       ? { type: 'json_schema', json_schema: { name: 'vinacut_shot_plan', strict: false, schema } }
@@ -250,8 +278,8 @@ function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, system = 
   };
 }
 
-async function callGoogleGemini({ baseUrl, apiKey, model, system, prompt, imageBase64, json = false, schema, timeoutMs = 60000, signal }) {
-  const request = buildAiRequest({ provider: 'Google', baseUrl, apiKey, model, system, prompt, imageBase64, json, schema });
+async function callGoogleGemini({ baseUrl, apiKey, model, effort = 'auto', system, prompt, imageBase64, json = false, schema, timeoutMs = 60000, signal }) {
+  const request = buildAiRequest({ provider: 'Google', baseUrl, apiKey, model, effort, system, prompt, imageBase64, json, schema });
   const candidateModel = request.model;
   const endpoint = request.url;
   const controller = new AbortController();
@@ -281,7 +309,9 @@ async function callGoogleGemini({ baseUrl, apiKey, model, system, prompt, imageB
       throw error;
     }
 
-    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+    const rawParts = Array.isArray(data?.candidates?.[0]?.content?.parts) ? data.candidates[0].content.parts : [];
+    const visibleText = rawParts.filter((p) => !p?.thought).map((p) => p?.text || '').join('');
+    const text = visibleText || rawParts.map((p) => p?.text || '').join('') || '';
     if (!text.trim()) {
       const blockReason = data?.promptFeedback?.blockReason;
       throw new Error(blockReason ? `Google chặn nội dung: ${blockReason}` : 'Model không trả về nội dung.');
@@ -303,8 +333,14 @@ function isStructuredSchemaError(message, status) {
   return Number(status) === 400 && /schema|response[_ ]?format|responsejsonschema|structured|tool_choice|input_schema|unknown field|unsupported/.test(text);
 }
 
+function isEffortUnsupportedError(message, status) {
+  const text = String(message || '').toLowerCase();
+  return Number(status) === 400 && /reasoning[_ ]?effort|thinking|budget_tokens|thinkinglevel|thinkingbudget|thinking_config|\beffort\b/.test(text);
+}
+
 async function callAiChatInternal(payload, signal) {
-  const { provider = 'Google', baseUrl, apiKey, model, system = '', prompt = '', imageBase64, json = false, schema } = payload || {};
+  const { provider = 'Google', baseUrl, apiKey, model, effort = 'auto', system = '', prompt = '', imageBase64, json = false, schema } = payload || {};
+  const normalizedEffort = normalizeReasoningEffort(effort);
   const cleanKey = String(apiKey || '').trim();
   if (!cleanKey) {
     throw new Error('Chưa có API Key. Hãy bấm "Cấu hình AI" để dán API key.');
@@ -321,6 +357,7 @@ async function callAiChatInternal(payload, signal) {
         baseUrl: baseUrl || 'https://generativelanguage.googleapis.com/v1beta',
         apiKey: cleanKey,
         model: model || 'gemini-3.8-flash',
+        effort: normalizedEffort,
         system,
         prompt,
         imageBase64,
@@ -331,11 +368,15 @@ async function callAiChatInternal(payload, signal) {
       });
       return res.text;
     } catch (error) {
+      if (normalizedEffort !== 'auto' && isEffortUnsupportedError(error?.message, error?.status)) {
+        return callAiChatInternal({ ...payload, effort: 'auto' }, signal);
+      }
       if (json && schema && isStructuredSchemaError(error?.message, error?.status)) {
         const fallback = await callGoogleGemini({
           baseUrl: baseUrl || 'https://generativelanguage.googleapis.com/v1beta',
           apiKey: cleanKey,
           model: model || 'gemini-3.8-flash',
+          effort: normalizedEffort,
           system,
           prompt,
           imageBase64,
@@ -349,7 +390,7 @@ async function callAiChatInternal(payload, signal) {
       throw error;
     }
   }
-  const request = buildAiRequest({ provider, baseUrl, apiKey: cleanKey, model, system, prompt, imageBase64, json, schema });
+  const request = buildAiRequest({ provider, baseUrl, apiKey: cleanKey, model, effort: normalizedEffort, system, prompt, imageBase64, json, schema });
   const endpoint = request.url;
   const headers = request.headers;
   const body = request.body;
@@ -392,6 +433,9 @@ async function callAiChatInternal(payload, signal) {
     const rawError = typeof apiError === 'string'
       ? apiError
       : apiError?.message || (apiError ? JSON.stringify(apiError) : `AI request failed (${response.status})`);
+    if (normalizedEffort !== 'auto' && isEffortUnsupportedError(rawError, response.status)) {
+      return callAiChatInternal({ ...payload, effort: 'auto' }, signal);
+    }
     if (json && schema && isStructuredSchemaError(rawError, response.status)) {
       return callAiChatInternal({ ...payload, json: false, schema: undefined }, signal);
     }
@@ -404,7 +448,7 @@ async function callAiChatInternal(payload, signal) {
   if (provider === 'Anthropic') {
     const tool = data?.content?.find((part) => part.type === 'tool_use' && part.input);
     if (tool) return JSON.stringify(tool.input);
-    return data?.content?.map((part) => part.text || '').join('') || '';
+    return data?.content?.filter((part) => part?.type === 'text' || (!part?.type && part?.text)).map((part) => part.text || '').join('') || '';
   }
   return data?.choices?.[0]?.message?.content || '';
 }
@@ -412,7 +456,7 @@ async function callAiChatInternal(payload, signal) {
 ipcMain.handle('ai:chat', async (_event, payload) => callAiChatInternal(payload));
 
 ipcMain.handle('ai:test', async (_event, payload) => {
-  const { provider = 'Google', baseUrl, apiKey, model } = payload || {};
+  const { provider = 'Google', baseUrl, apiKey, model, effort = 'auto' } = payload || {};
   const cleanKey = String(apiKey || '').trim();
   if (!cleanKey) throw new Error('Vui lòng dán API Key trước khi kiểm tra.');
 
@@ -428,10 +472,12 @@ ipcMain.handle('ai:test', async (_event, payload) => {
     : (discoveredModels[0] || (provider === 'Anthropic' ? 'claude-sonnet-5-5' : provider === 'Google' ? 'gemini-3.8-flash' : 'gpt-6.1-sol'));
 
   if (provider === 'Google') {
-    const planner = await callGoogleGemini({
+    await callAiChatInternal({
+      provider: 'Google',
       baseUrl: normalizedBaseUrl,
       apiKey: cleanKey,
       model: effectiveModel,
+      effort,
       system: 'Reply with OK.',
       prompt: 'Ping',
       timeoutMs: 25000,
@@ -450,10 +496,10 @@ ipcMain.handle('ai:test', async (_event, payload) => {
     }
     return {
       ok: true,
-      model: planner.usedModel,
+      model: effectiveModel,
       baseUrl: normalizedBaseUrl,
       models: discoveredModels,
-      message: `Đã kết nối Google AI Studio (${planner.usedModel}). Planner VinaCAD sẵn sàng chạy; ${computerUseMessage}`,
+      message: `Đã kết nối Google AI Studio (${effectiveModel}). Planner VinaCAD sẵn sàng chạy; ${computerUseMessage}`,
     };
   }
 
@@ -463,6 +509,7 @@ ipcMain.handle('ai:test', async (_event, payload) => {
       baseUrl: normalizedBaseUrl,
       apiKey: cleanKey,
       model: effectiveModel,
+      effort,
       system: 'Reply with OK.',
       prompt: 'Ping',
       timeoutMs: 25000,
@@ -1227,7 +1274,7 @@ function videoPayload(result, quality) {
 ipcMain.handle('production:plan', async (_event, payload) => {
   const controller = beginProduction();
   try {
-    const { prompt, knowledge, dwgPath, provider = 'Google', baseUrl, apiKey, model } = payload || {};
+    const { prompt, knowledge, dwgPath, provider = 'Google', baseUrl, apiKey, model, effort = 'auto' } = payload || {};
     if (!String(prompt || '').trim()) throw new Error('Vui lòng nhập kịch bản/prompt trước.');
     const cleanKey = String(apiKey || '').trim();
     if (!cleanKey) {
@@ -1251,7 +1298,7 @@ ipcMain.handle('production:plan', async (_event, payload) => {
     const { context, screenshot } = await director.collectContext({ drawingPath: dwgPath, signal: controller.signal, onProgress: sendProductionProgress });
     const result = await planner.planWithAi({
       chat: ({ system, prompt: message, imageBase64, json, schema, signal }) => callAiChatInternal(
-        { provider, baseUrl, apiKey: cleanKey, model, system, prompt: message, imageBase64, json, schema, timeoutMs: 150000 },
+        { provider, baseUrl, apiKey: cleanKey, model, effort, system, prompt: message, imageBase64, json, schema, timeoutMs: 150000 },
         signal,
       ),
       prompt,
@@ -1542,4 +1589,4 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-module.exports = { buildAiRequest, callAiChatInternal, isStructuredSchemaError };
+module.exports = { buildAiRequest, callAiChatInternal, isStructuredSchemaError, isEffortUnsupportedError, normalizeReasoningEffort };
