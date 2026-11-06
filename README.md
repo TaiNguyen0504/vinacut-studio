@@ -48,9 +48,9 @@ Sau khi lệnh `npm run dist` hoàn tất, các bản build sẽ nằm trong th�
   - Nhóm tạo hình: `LINE`, `PLINE`, `RECTANG`, `CIRCLE`, `MTEXT` (tự động tạo layer nổi bật `VINACUT-DEMO` màu cam `#FFB347` khi kịch bản không chỉ định layer).
   - Nhóm chỉnh sửa: `MOVE`, `COPY`, `ROTATE`, `OFFSET`, `ERASE`.
   - Mọi thao tác đều kiểm tra hậu điều kiện trong database ODA WASM và đo biến thiên pixel thực tế trên canvas trước/sau lệnh, kèm kiểm tra trạng thái sạch (`assertCleanState`).
-- **Hỗ trợ đa nhà cung cấp AI:**
+- **Hỗ trợ đa nhà cung cấp AI & tùy chỉnh mức suy luận (`Reasoning Effort`):**
   - `Google Gemini` (`gemini-3.8-flash`, `gemini-4-argon`...)
   - `OpenAI` (`gpt-6.1-sol`, `gpt-5.5`...)
   - `Anthropic` (`claude-sonnet-5-5`, `claude-opus-5-5`...)
-  - `Custom (OpenAI-compatible)` — Tương thích trực tiếp với các cổng proxy như `https://api.kingofapi.store/v1`.
+  - `Custom (OpenAI-compatible)` — Tương thích trực tiếp với các cổng proxy như `https://api.kingofapi.store/v1`, hỗ trợ chọn mức suy luận (`auto`, `none`, `low`, `medium`, `high`, `max`) và luồng SSE streaming chống timeout khi suy luận sâu.
 - **Dựng video 4K 60fps tốc độ cao:** Tự động chọn encoder phần cứng (`h264_nvenc`, `h264_qsv`, `h264_amf`) hoặc fallback an toàn sang `libx264` với số luồng tối ưu theo CPU và RAM trống.

@@ -181,7 +181,7 @@ function normalizeReasoningEffort(rawEffort) {
 // Pure request builder shared by production calls and the regression checker. Keeping
 // provider-specific schema placement here prevents the test from drifting away from
 // the request that the app actually sends.
-function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, effort = 'auto', system = '', prompt = '', imageBase64, json = false, schema } = {}) {
+function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, effort = 'auto', stream = false, system = '', prompt = '', imageBase64, json = false, schema } = {}) {
   const cleanKey = String(apiKey || '').trim();
   const imageMime = imageMimeType(imageBase64);
   const normalizedEffort = normalizeReasoningEffort(effort);
@@ -233,6 +233,7 @@ function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, effort = 
     if (thinkingBudget) {
       body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
     }
+    if (stream) body.stream = true;
     if (json && schema) {
       body.tools = [{ name: 'create_shot_plan', description: 'Return the validated VinaCAD shot plan.', input_schema: schema }];
       body.tool_choice = thinkingBudget ? { type: 'auto' } : { type: 'tool', name: 'create_shot_plan' };
@@ -258,11 +259,17 @@ function buildAiRequest({ provider = 'Google', baseUrl, apiKey, model, effort = 
     body.reasoning_effort = normalizedEffort === 'none'
       ? (/^o\d/i.test(chatModel) ? 'low' : 'none')
       : normalizedEffort === 'max'
-        ? (provider === 'OpenAI' && /^(gpt-5\.[2-9]|gpt-6)/i.test(chatModel) ? 'xhigh' : 'high')
+        ? (provider === 'Custom' && /^claude/i.test(chatModel)
+          ? 'max'
+          : (provider === 'OpenAI' && /^(gpt-5\.[2-9]|gpt-6)/i.test(chatModel) ? 'xhigh' : 'high'))
         : normalizedEffort;
   } else if (!/^(o\d|gpt-5|gpt-6)/i.test(chatModel)) {
     body.temperature = 0.25;
   }
+  if (provider === 'Custom') {
+    body.max_tokens = normalizedEffort === 'max' ? 24576 : normalizedEffort === 'high' ? 16384 : 8192;
+  }
+  if (stream) body.stream = true;
   if (json && !(provider === 'Custom' && /^claude/i.test(chatModel))) {
     body.response_format = (schema && provider !== 'Custom')
       ? { type: 'json_schema', json_schema: { name: 'vinacut_shot_plan', strict: false, schema } }
@@ -338,6 +345,61 @@ function isEffortUnsupportedError(message, status) {
   return Number(status) === 400 && /reasoning[_ ]?effort|thinking|budget_tokens|thinkinglevel|thinkingbudget|thinking_config|\beffort\b/.test(text);
 }
 
+function parseSseChatStream(lines, provider, endpoint) {
+  let textOut = '';
+  let toolJson = '';
+  let hasToolUse = false;
+  let done = false;
+  for (const rawLine of lines) {
+    const line = String(rawLine || '').trim();
+    if (!line || line.startsWith(':') || line.startsWith('event:')) continue;
+    if (!line.startsWith('data:')) continue;
+    const dataStr = line.slice(5).trim();
+    if (!dataStr) continue;
+    if (dataStr === '[DONE]') {
+      done = true;
+      continue;
+    }
+    let evt;
+    try {
+      evt = JSON.parse(dataStr);
+    } catch {
+      continue;
+    }
+    if (evt?.error || evt?.type === 'error') {
+      const rawErr = typeof evt.error === 'string'
+        ? evt.error
+        : evt?.error?.message || JSON.stringify(evt.error || evt);
+      const err = new Error(summarizeApiError(rawErr, 502, endpoint));
+      err.status = 502;
+      throw err;
+    }
+    if (provider === 'Anthropic') {
+      if (evt.type === 'message_stop') done = true;
+      if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+        hasToolUse = true;
+        if (evt.content_block.input && Object.keys(evt.content_block.input).length > 0) {
+          toolJson += JSON.stringify(evt.content_block.input);
+        }
+      }
+      if (evt.type === 'content_block_delta') {
+        if (evt.delta?.type === 'input_json_delta') toolJson += evt.delta.partial_json || '';
+        else if (evt.delta?.type === 'text_delta') textOut += evt.delta.text || '';
+      }
+    } else {
+      const choice = evt?.choices?.[0];
+      if (choice?.finish_reason) done = true;
+      if (typeof choice?.delta?.content === 'string') textOut += choice.delta.content;
+    }
+  }
+  if (!done) {
+    const err = new Error('Luồng phản hồi AI bị ngắt trước khi hoàn tất.');
+    err.status = 502;
+    throw err;
+  }
+  return (hasToolUse && toolJson.trim()) ? toolJson : textOut;
+}
+
 async function callAiChatInternal(payload, signal) {
   const { provider = 'Google', baseUrl, apiKey, model, effort = 'auto', system = '', prompt = '', imageBase64, json = false, schema } = payload || {};
   const normalizedEffort = normalizeReasoningEffort(effort);
@@ -346,10 +408,14 @@ async function callAiChatInternal(payload, signal) {
     throw new Error('Chưa có API Key. Hãy bấm "Cấu hình AI" để dán API key.');
   }
 
+  const useStreamEarly = payload?.stream !== undefined
+    ? Boolean(payload.stream)
+    : (provider !== 'Google' && (provider === 'Custom' || normalizedEffort === 'high' || normalizedEffort === 'max'));
+  const maxAllowedTimeout = useStreamEarly ? 900000 : 240000;
   const requestedTimeout = Number(payload?.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeout)
-    ? Math.min(Math.max(requestedTimeout, 5000), 180000)
-    : 120000;
+    ? Math.min(Math.max(requestedTimeout, 5000), maxAllowedTimeout)
+    : (useStreamEarly ? 600000 : 180000);
 
   if (provider === 'Google') {
     try {
@@ -390,36 +456,86 @@ async function callAiChatInternal(payload, signal) {
       throw error;
     }
   }
-  const request = buildAiRequest({ provider, baseUrl, apiKey: cleanKey, model, effort: normalizedEffort, system, prompt, imageBase64, json, schema });
+  const useStream = useStreamEarly;
+  const request = buildAiRequest({ provider, baseUrl, apiKey: cleanKey, model, effort: normalizedEffort, stream: useStream, system, prompt, imageBase64, json, schema });
   const endpoint = request.url;
   const headers = request.headers;
   const body = request.body;
 
   const controller = new AbortController();
+  const startedAt = Date.now();
+  let idleTriggered = false;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let idleTimer = null;
+  const resetIdle = () => {
+    if (!useStream) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTriggered = true;
+      controller.abort();
+    }, 150000);
+  };
   const onAbort = () => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   let response;
-  let raw;
+  let raw = '';
+  let streamedResult = null;
+  let lastProgressTick = 0;
   try {
+    resetIdle();
     response = await fetch(endpoint, {
       method: request.method,
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    raw = await response.text();
+    resetIdle();
+    const contentType = String(response?.headers?.get?.('content-type') || '');
+    if (response.ok && /text\/event-stream/i.test(contentType)) {
+      let buffer = '';
+      const sseLines = [];
+      const consume = (chunkStr, flush = false) => {
+        buffer += chunkStr;
+        const parts = buffer.split(/\r?\n/);
+        buffer = flush ? '' : parts.pop();
+        for (const line of parts) sseLines.push(line);
+      };
+      if (response.body && typeof response.body[Symbol.asyncIterator] === 'function') {
+        const decoder = new TextDecoder('utf-8');
+        for await (const chunk of response.body) {
+          resetIdle();
+          const now = Date.now();
+          if (typeof payload?.onStreamProgress === 'function' && now - lastProgressTick >= 15000) {
+            lastProgressTick = now;
+            payload.onStreamProgress(Math.round((now - startedAt) / 1000));
+          }
+          consume(typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }));
+        }
+        consume(decoder.decode(), true);
+      } else {
+        consume(await response.text(), true);
+      }
+      streamedResult = parseSseChatStream(sseLines, provider, endpoint);
+    } else {
+      raw = await response.text();
+    }
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new Error(signal?.aborted
         ? 'Đã dừng tác vụ AI.'
-        : `Kết nối hết thời gian chờ sau ${Math.round(timeoutMs / 1000)} giây.`);
+        : idleTriggered
+          ? 'Luồng AI không phản hồi quá 150 giây.'
+          : `Kết nối hết thời gian chờ sau ${Math.round(timeoutMs / 1000)} giây.`);
     }
+    if (error?.status) throw error;
     throw new Error(`Không kết nối được tới AI endpoint: ${error?.message || 'lỗi mạng'}`);
   } finally {
     clearTimeout(timeout);
+    if (idleTimer) clearTimeout(idleTimer);
     signal?.removeEventListener('abort', onAbort);
   }
+
+  if (streamedResult !== null) return streamedResult;
 
   let data;
   try {
@@ -480,7 +596,7 @@ ipcMain.handle('ai:test', async (_event, payload) => {
       effort,
       system: 'Reply with OK.',
       prompt: 'Ping',
-      timeoutMs: 25000,
+      timeoutMs: 45000,
     });
     let computerUseMessage = 'Computer Use chưa xác thực trong lần kiểm tra này.';
     try {
@@ -512,7 +628,7 @@ ipcMain.handle('ai:test', async (_event, payload) => {
       effort,
       system: 'Reply with OK.',
       prompt: 'Ping',
-      timeoutMs: 25000,
+      timeoutMs: 45000,
     });
     return {
       ok: Boolean(text),
@@ -1296,9 +1412,24 @@ ipcMain.handle('production:plan', async (_event, payload) => {
     }
     sendProductionProgress({ phase: 'plan', message: 'Đang đọc bản vẽ để AI hiểu ngữ cảnh…' });
     const { context, screenshot } = await director.collectContext({ drawingPath: dwgPath, signal: controller.signal, onProgress: sendProductionProgress });
+    const normEff = normalizeReasoningEffort(effort);
+    const planTimeoutMs = normEff === 'max' ? 900000 : normEff === 'high' ? 420000 : 240000;
     const result = await planner.planWithAi({
       chat: ({ system, prompt: message, imageBase64, json, schema, signal }) => callAiChatInternal(
-        { provider, baseUrl, apiKey: cleanKey, model, effort, system, prompt: message, imageBase64, json, schema, timeoutMs: 150000 },
+        {
+          provider,
+          baseUrl,
+          apiKey: cleanKey,
+          model,
+          effort,
+          system,
+          prompt: message,
+          imageBase64,
+          json,
+          schema,
+          timeoutMs: planTimeoutMs,
+          onStreamProgress: (sec) => sendProductionProgress({ phase: 'plan', message: `AI đang suy luận sâu (${sec}s)…` }),
+        },
         signal,
       ),
       prompt,
@@ -1589,4 +1720,4 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-module.exports = { buildAiRequest, callAiChatInternal, isStructuredSchemaError, isEffortUnsupportedError, normalizeReasoningEffort };
+module.exports = { buildAiRequest, callAiChatInternal, parseSseChatStream, isStructuredSchemaError, isEffortUnsupportedError, normalizeReasoningEffort };

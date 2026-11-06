@@ -100,8 +100,8 @@ async function mainTest() {
   assert(anthropicEffort.body.tool_choice?.type === 'auto', 'Anthropic: khi bật thinking phải dùng tool_choice auto để tránh lỗi 400');
   const openAiEffort = main.buildAiRequest({ provider: 'OpenAI', apiKey: 'test-key', model: 'gpt-6-astra', effort: 'max', prompt: 'p' });
   assert(openAiEffort.body.reasoning_effort === 'xhigh' && openAiEffort.body.temperature === undefined, 'OpenAI GPT-6 max: thiếu reasoning_effort=xhigh');
-  const customEffort = main.buildAiRequest({ provider: 'Custom', apiKey: 'test-key', baseUrl: 'https://api.kingofapi.store/v1', model: 'claude-opus-5-5', effort: 'high', prompt: 'p' });
-  assert(customEffort.body.reasoning_effort === 'high' && customEffort.body.temperature === undefined, 'Custom: thiếu reasoning_effort=high');
+  const customEffort = main.buildAiRequest({ provider: 'Custom', apiKey: 'test-key', baseUrl: 'https://api.kingofapi.store/v1', model: 'claude-opus-5-5', effort: 'max', prompt: 'p' });
+  assert(customEffort.body.reasoning_effort === 'max' && customEffort.body.max_tokens === 24576 && customEffort.body.temperature === undefined, 'Custom claude-opus-5-5 max: thiếu reasoning_effort=max hoặc max_tokens=24576');
   rows.push({ kind: 'builder-effort', result: 'PASS' });
 
   const googleThoughtFilter = await withFakeFetch([{
@@ -117,6 +117,24 @@ async function mainTest() {
   ], () => main.callAiChatInternal({ provider: 'Custom', apiKey: 'test-key', baseUrl: 'https://fake/v1', model: 'legacy-chat', effort: 'high', prompt: 'ping' }));
   assert(effortFallback.calls.length === 2 && effortFallback.calls[1].body.reasoning_effort === undefined && effortFallback.value === 'OK-NO-EFFORT', 'Fallback effort 400 thất bại');
   rows.push({ kind: 'fallback-effort', result: 'PASS', calls: effortFallback.calls.length });
+
+  const sseOut = main.parseSseChatStream([
+    ': keepalive',
+    'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+    ': keepalive',
+    'data: {"choices":[{"delta":{"content":"{\\"title\\":\\"SSE"}}]}',
+    'data: {"choices":[{"delta":{"content":"_OK\\"}"},"finish_reason":"stop"}]}',
+    'data: [DONE]',
+  ], 'Custom', 'https://api.kingofapi.store/v1/chat/completions');
+  assert(sseOut === '{"title":"SSE_OK"}', `SSE parse sai: ${sseOut}`);
+  let truncatedFailed = false;
+  try {
+    main.parseSseChatStream([': keepalive', 'data: {"choices":[{"delta":{"content":"half"}}]}'], 'Custom', 'https://api.kingofapi.store/v1/chat/completions');
+  } catch {
+    truncatedFailed = true;
+  }
+  assert(truncatedFailed, 'SSE cụt luồng phải báo lỗi để retry');
+  rows.push({ kind: 'sse-stream-keepalive', result: 'PASS' });
 }
 
 const timer = setTimeout(() => app.exit(1), 90000);
